@@ -3,7 +3,7 @@
  * Nhập lời thơ, chọn điệu → tự tạo giai điệu + hòa âm phối khí → nghe thử → tải về
  * MusicXML (.musicxml / .xml) và MIDI (.mid) để mở trong Guitar Pro 8, kèm WAV và bảng hợp âm.
  * Không cần thư viện ngoài.
- * Bản tối ưu: tách chữ ở dấu …, giai điệu mượt hơn, UST có hơi thở + vibrato; MusicXML có hợp âm ở mọi ô nhịp, luyến láy cuối câu theo dấu thanh, dấu lấy hơi, cường độ, rit., fermata kết.
+ * Có bước phân tích lời tự động (cảm xúc, giọng, điệu, mạch cường độ). Bản tối ưu: tách chữ ở dấu …, giai điệu mượt hơn, UST có hơi thở + vibrato; MusicXML có hợp âm ở mọi ô nhịp, luyến láy cuối câu theo dấu thanh, dấu lấy hơi, cường độ, rit., fermata kết.
  */
 (function (G) {
 'use strict';
@@ -63,6 +63,125 @@ function parseLyrics(text) {
   secs.forEach(function (s, i) { if (!s.label) s.label = 'Đoạn ' + (i + 1); });
   return secs;
 }
+
+/* ================= 2b. NHẠC SĨ PHÂN TÍCH LỜI (tự động cho mọi bài) ================= */
+var MOODS = {
+  tri_an:   { name: 'Tri ân, kính trọng', w: ['kính','trọng','ơn','nghĩa','vinh','danh','tri ân','biết ơn','thầy','cô','sư phạm','quý','tôn','công lao','tổ quốc','xã hội','tình thương','yêu thương','trân trọng','mầm','ươm','giáo','cha','mẹ'] },
+  hoai_niem:{ name: 'Hoài niệm, nhớ về', w: ['xưa','nhớ','cũ','đợi','thuở','chiều','bến','bờ','quê','kỷ niệm','năm tháng','ngày xưa','hồi','đò','mãi','nhớ thương','tuổi thơ','trường'] },
+  gian_nan: { name: 'Gian khó, vượt thử thách', w: ['gian','khó','dữ','bão','giông','lênh đênh','nhọc','vất vả','ngược','thác','ghềnh','chông gai','mưa','sóng','vượt','chống','chèo','cực','khổ'] },
+  buon:     { name: 'Buồn, đau, chia xa', w: ['buồn','khóc','lệ','nước mắt','chia','cô đơn','đau','mất','tiếc','sầu','tàn','rơi','xa','đắng','bể dâu','đớn','tủi','hận','chết','nhớ nhung'] },
+  vui:      { name: 'Vui, tươi sáng', w: ['vui','cười','hát','nắng','xuân','mừng','tươi','hồng','hạnh phúc','ca','múa','rộn','rạng','sáng','hoa','yêu','say','ngọt'] },
+  hao_hung: { name: 'Hào hùng, vươn lên', w: ['bay','cao','vươn','tiến','dựng','anh hùng','vinh quang','chiến','cờ','bất tử','hùng','tung','cánh','tận cùng','vút','khát vọng','ước mơ','tương lai'] },
+  binh_yen: { name: 'Êm đềm, thanh bình', w: ['êm','nhẹ','mát','xanh','trôi','ru','mơ','gió','trăng','thuyền','bình yên','thanh bình','lặng','dịu','bình thường','đơn giản','sông','biển','mây'] }
+};
+var STOP = ['là','và','của','những','một','có','cho','đã','đang','sẽ','như','với','trong','khi','thì','mà','để','này','đó','ấy','nào','cũng','vẫn','còn','lại','được','bị','ở','tại','về','ra','vào','lên','xuống','không','chẳng','chưa'];
+function wordsOf(t) { return String(t).toLowerCase().split(/[\s\-–—\/…]+|\.{2,}/).map(function (w) { return w.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ''); }).filter(Boolean); }
+function countMoods(words) {
+  var pad = ' ' + words.join(' ') + ' ', out = {}, hits = {};
+  Object.keys(MOODS).forEach(function (k) {
+    var n = 0; hits[k] = [];
+    MOODS[k].w.forEach(function (e) {
+      var from = 0, c = 0, i;
+      while ((i = pad.indexOf(' ' + e + ' ', from)) >= 0) { c++; from = i + 1; }
+      if (c) { n += c; hits[k].push(e + (c > 1 ? '×' + c : '')); }
+    });
+    out[k] = n;
+  });
+  return { n: out, hits: hits };
+}
+function rhymeKey(w) {
+  var s = String(w).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd');
+  return s.replace(/^(ngh|ng|nh|ch|th|tr|ph|kh|gh|gi|qu|[bcdghklmnpqrstvx])+(?=[aeiouy])/, '');
+}
+function fmtList(a) { return a.length ? a.join(', ') : '—'; }
+
+function analyze(text) {
+  var secs = parseLyrics(text), hasLabels = /^\s*\[.+\]\s*$/m.test(String(text || ''));
+  var R = { empty: !secs.length, hasLabels: hasLabels, notes: [] };
+  if (R.empty) return R;
+  var tones = { ngang: 0, huyen: 0, sac: 0, hoi: 0, nga: 0, nang: 0 }, ends = { ngang: 0, huyen: 0, sac: 0, hoi: 0, nga: 0, nang: 0 };
+  var lines = [], lens = {}, all = [], endWords = [];
+  secs.forEach(function (s) { s.lines.forEach(function (ln) {
+    lines.push(ln); lens[ln.length] = (lens[ln.length] || 0) + 1;
+    ln.forEach(function (w) { tones[w.tone]++; all.push(w.text.toLowerCase()); });
+    ends[ln[ln.length - 1].tone]++; endWords.push(ln[ln.length - 1].text);
+  }); });
+  var nW = all.length, nL = lines.length;
+  var bang = (tones.ngang + tones.huyen) / nW;
+  var modal = 0, mc = 0; Object.keys(lens).forEach(function (k) { if (lens[k] > mc) { mc = lens[k]; modal = +k; } });
+  var wpl = nW / nL;
+  // gieo vần cuối câu
+  var rp = 0; for (var i = 1; i < endWords.length; i++) if (rhymeKey(endWords[i]) === rhymeKey(endWords[i - 1])) rp++;
+  var rhymePct = endWords.length > 1 ? rp / (endWords.length - 1) : 0;
+  // cụm lặp (móc)
+  var bg = {}; lines.forEach(function (ln) { var t = ln.map(function (w) { return w.text.toLowerCase(); }); for (var j = 0; j + 1 < t.length; j++) {
+    if (STOP.indexOf(t[j]) >= 0 || STOP.indexOf(t[j + 1]) >= 0) continue; var k = t[j] + ' ' + t[j + 1]; bg[k] = (bg[k] || 0) + 1; } });
+  var hooks = Object.keys(bg).filter(function (k) { return bg[k] >= 3; }).sort(function (a, b) { return bg[b] - bg[a]; }).slice(0, 3);
+  // cảm xúc toàn bài và từng đoạn
+  var tot = countMoods(all), ratio = {};
+  Object.keys(MOODS).forEach(function (k) { ratio[k] = tot.n[k] / nW * 100; });
+  var moods = Object.keys(MOODS).map(function (k) { return { id: k, name: MOODS[k].name, n: tot.n[k], pct: ratio[k], hits: tot.hits[k] }; })
+    .sort(function (a, b) { return b.n - a.n; });
+  var sumHits = moods.reduce(function (a, m) { return a + m.n; }, 0);
+  var strongMood = sumHits >= Math.max(3, nW * 0.05);
+  var minorScore = ratio.buon + 0.8 * ratio.hoai_niem + 0.6 * ratio.gian_nan + 0.2 * ratio.binh_yen;
+  var majorScore = ratio.vui + ratio.hao_hung + 0.8 * ratio.tri_an;
+  var mode, modeWhy, conf;
+  if (!strongMood) { mode = bang > 0.55 ? 'minor' : 'major'; conf = 'thấp'; modeWhy = 'Lời ít từ gợi cảm xúc rõ, nên mình tạm chọn theo thanh điệu (thanh bằng nhiều thì giai điệu êm, hợp giọng thứ). Bạn nên tự quyết.'; }
+  else {
+    var diff = Math.abs(minorScore - majorScore) / Math.max(1e-6, minorScore + majorScore);
+    mode = minorScore >= majorScore ? 'minor' : 'major'; conf = diff > 0.3 ? 'cao' : diff > 0.12 ? 'vừa' : 'thấp';
+    modeWhy = mode === 'minor' ? 'Các từ hoài niệm, gian khó, buồn chiếm ưu thế (điểm giọng thứ ' + minorScore.toFixed(1) + ' so với giọng trưởng ' + majorScore.toFixed(1) + ').'
+                               : 'Các từ tươi sáng, hào hùng, tri ân chiếm ưu thế (điểm giọng trưởng ' + majorScore.toFixed(1) + ' so với giọng thứ ' + minorScore.toFixed(1) + ').';
+    if (conf === 'thấp') modeWhy += ' Hai bên khá sát nhau nên có thể dùng giọng thứ cho phần kể và giọng trưởng song song cho cao trào (công cụ chưa tự chuyển giọng được).';
+  }
+  // điệu
+  var ctr = function (k) { return ratio[k]; };
+  var cand = {
+    ballad:    { s: 1.0 + 0.5 * ctr('hoai_niem') + 0.5 * ctr('tri_an') + 0.3 * ctr('buon'), why: 'kể chuyện chân thành, hợp lời nhiều chữ' },
+    bolero:    { s: 0.4 + 0.6 * ctr('hoai_niem') + 0.7 * ctr('buon') + 0.2 * ctr('tri_an'), why: 'hợp nỗi nhớ, tình cảm sâu lắng' },
+    valse:     { s: 0.3 + 0.7 * ctr('binh_yen') + 0.3 * ctr('hoai_niem'), why: 'nhịp 3/4 đưa nhẹ, hợp hình ảnh sông nước, thanh bình' },
+    slowrock:  { s: 0.3 + 0.5 * ctr('gian_nan') + 0.4 * ctr('hao_hung') + 0.3 * ctr('buon'), why: 'có sức nặng, hợp đoạn gian khó hoặc cao trào' },
+    pop:       { s: 0.2 + 0.6 * ctr('vui') + 0.5 * ctr('hao_hung'), why: 'sáng, rõ nhịp, hợp lời tươi sáng, hào hùng' },
+    chachacha: { s: 0.1 + 0.8 * ctr('vui'), why: 'vui, nhảy, hợp lời hồ hởi' },
+    bossa:     { s: 0.2 + 0.5 * ctr('binh_yen') + 0.3 * ctr('vui'), why: 'nhẹ nhàng, hợp ca từ thư thả' },
+    rumba:     { s: 0.2 + 0.4 * ctr('hoai_niem') + 0.3 * ctr('buon'), why: 'ngọt, trữ tình' },
+    disco:     { s: 0.0 + 0.5 * ctr('vui'), why: 'sôi động' }
+  };
+  var fast = ['chachacha', 'disco', 'pop'], slow = ['ballad', 'bolero', 'valse'];
+  if (wpl >= 7.5) { fast.forEach(function (k) { cand[k].s -= 1.5; }); slow.forEach(function (k) { cand[k].s += 0.7; });
+    R.notes.push('Mỗi câu trung bình ' + wpl.toFixed(1) + ' chữ, khá dài, nên điệu nhanh sẽ bị dồn chữ. Ưu tiên điệu chậm.'); }
+  if (modal && modal % 3 === 0 && mc / nL > 0.5) { cand.valse.s += 1.2; R.notes.push('Phần lớn câu có ' + modal + ' chữ (chia hết cho 3), thuận cho nhịp 3/4.'); }
+  if (mode === 'major') { cand.pop.s += 0.4; cand.ballad.s += 0.1; } else { cand.slowrock.s += 0.2; cand.bolero.s += 0.3; }
+  var styles = Object.keys(cand).map(function (k) { return { key: k, score: cand[k].s, why: cand[k].why }; }).sort(function (a, b) { return b.score - a.score; });
+  // từng đoạn
+  var secInfo = secs.map(function (s, si) {
+    var ws = []; s.lines.forEach(function (ln) { ln.forEach(function (w) { ws.push(w.text.toLowerCase()); }); });
+    var c = countMoods(ws), top = Object.keys(MOODS).sort(function (a, b) { return c.n[b] - c.n[a]; })[0];
+    var pos = c.n.vui + c.n.hao_hung + 0.6 * c.n.tri_an + 0.3 * c.n.binh_yen, neg = c.n.buon + 0.5 * c.n.gian_nan;
+    return { label: s.label, lines: s.lines.length, words: ws.length, mood: c.n[top] ? MOODS[top].name : 'trung tính', moodId: c.n[top] ? top : null,
+             hits: Object.keys(MOODS).reduce(function (a, k) { return a.concat(c.hits[k]); }, []).slice(0, 8), e: (pos - neg) / Math.max(1, ws.length) * 10 + si * 0.15 };
+  });
+  var order = secInfo.map(function (_, i) { return i; }).sort(function (a, b) { return secInfo[a].e - secInfo[b].e; });
+  var n = secInfo.length;
+  order.forEach(function (idx, rank) { secInfo[idx].rank = rank; });
+  secInfo.forEach(function (s, i) {
+    var dyn = n === 1 ? 'mf' : s.rank === 0 ? 'mp' : s.rank === n - 1 ? 'f' : 'mf';
+    if (i === 0 && n > 1) dyn = 'mp';
+    s.dyn = dyn; s.energy = dyn === 'f' ? 'cao trào' : dyn === 'mp' ? 'nhẹ, mở đầu' : 'vừa';
+  });
+  var peak = n > 1 ? order[n - 1] : -1;
+  var tonic = mode === 'minor' ? 9 : 0, kk = keyInfo(tonic, mode), nm = function (r, q) { return kk.names[(tonic + r) % 12] + SUF[q]; };
+  var prog = mode === 'minor' ? [nm(0, 'm'), nm(8, 'M'), nm(5, 'm'), nm(7, '7')] : [nm(0, 'M'), nm(9, 'm'), nm(5, 'M'), nm(7, '7')];
+  secInfo.forEach(function (s, i) { s.chords = (i === peak && n >= 3) ? (mode === 'minor' ? [nm(8, 'M'), nm(3, 'M'), nm(5, 'm'), nm(7, '7')] : [nm(5, 'M'), nm(0, 'M'), nm(7, 'M'), nm(9, 'm')]) : prog; });
+  Object.assign(R, { nSecs: n, nLines: nL, nWords: nW, wpl: wpl, modal: modal, tones: tones, ends: ends, bang: bang, rhymePct: rhymePct, hooks: hooks, hookCount: bg,
+    moods: moods, strongMood: strongMood, mode: mode, modeWhy: modeWhy, conf: conf, tonic: tonic, styles: styles, secInfo: secInfo, peak: peak, prog: prog });
+  var dn = ends.huyen + ends.hoi + ends.nang, up = ends.sac + ends.nga;
+  R.cadence = { down: dn, up: up, flat: ends.ngang };
+  R.tempoHint = wpl >= 7.5 ? -4 : 0;
+  return R;
+}
+var TONE_VI = { ngang: 'ngang', huyen: 'huyền', sac: 'sắc', hoi: 'hỏi', nga: 'ngã', nang: 'nặng' };
 
 /* ================= 3. ĐIỆU (STYLE) ================= */
 var ALL = [0,1,3,4];                     // chỉ số các nốt của thế bấm dùng khi quạt
@@ -487,7 +606,7 @@ function toMusicXML(song) {
       }
       if (ti === 0 && bar.label === 'Kết') x += '<direction placement="above"><direction-type><words font-style="italic">rit.</words></direction-type><sound tempo="' + Math.round(song.tempo * 0.85) + '"/></direction>';
       if (ti === 0 && bar.kind === 'line' && bar.label) {
-        var dy = ['mp', 'mf', 'f', 'mf'][bar.sec % 4];
+        var dy = (song.options && song.options.dyn && song.options.dyn[bar.sec]) || ['mp', 'mf', 'f', 'mf'][bar.sec % 4];
         x += '<direction placement="below"><direction-type><dynamics><' + dy + '/></dynamics></direction-type></direction>';
       }
       if (ti === 0 && bar.label) x += '<direction placement="above"><direction-type><rehearsal>' + esc(bar.label) + '</rehearsal></direction-type></direction>';
@@ -809,6 +928,7 @@ canvas{display:block;width:100%;height:150px;background:#0e3a43;border-radius:8p
 .ch i{font-style:normal;background:#dceceb;border-radius:5px;padding:0 7px}.ch i.on{background:var(--sun);color:#2a1c00}
 .tx{font-family:'Noto Serif',Georgia,serif;font-size:17px}.ln.inst .tx{color:var(--mute);font-family:inherit;font-size:13px}
 .dl{display:flex;flex-wrap:wrap;gap:8px}
+.an{font-size:14px}.an h4{margin:12px 0 4px;font-size:14px;color:var(--seaD)}.an ul{margin:4px 0;padding-left:20px}.an table{border-collapse:collapse;width:100%;font-size:13px}.an td,.an th{border:1px solid var(--line);padding:4px 8px;text-align:left;vertical-align:top}.an th{background:#e5efed}.tag{display:inline-block;background:#dceceb;border-radius:5px;padding:0 7px;margin:0 4px 4px 0;font-size:13px}
 .note{font-size:13px;color:var(--mute);margin:10px 0 0}
 .msg{color:#8a3b00;font-size:14px;margin:6px 0 0;min-height:1em}
 details{margin-top:10px;font-size:14px}summary{cursor:pointer;color:var(--seaD);font-weight:600}
@@ -849,12 +969,16 @@ function mount(host, cfg) {
     '<label class="chk"><input type="checkbox" id="hm">Thêm bè quãng 3 (saxophone)</label>' +
     '<label class="chk"><input type="checkbox" id="sg">Thêm dàn dây nền</label>' +
     '<label class="chk"><input type="checkbox" id="kp">Các đoạn có cùng số chữ dùng chung giai điệu</label></section></div>' +
-  '<section class="card" style="margin-top:14px"><h3>3. Nghe thử</h3>' +
+  '<section class="card" style="margin-top:14px"><h3>3. Nhạc sĩ phân tích và đề xuất</h3><div class="an" id="an"></div>' +
+    '<div class="dl" style="margin-top:10px"><button class="btn" id="ap" type="button">Áp dụng đề xuất</button></div>' +
+    '<label class="chk"><input type="checkbox" id="ad" checked>Dùng cường độ (mp, mf, f) theo phân tích</label>' +
+    '<p class="hint">Xem kết quả, đổi điệu hoặc giọng ở mục 2 nếu bạn thấy khác, rồi mới nghe thử. Máy chỉ nhận ra cảm xúc qua từ khóa, nên đây là gợi ý để bạn quyết định.</p></section>' +
+  '<section class="card" style="margin-top:14px"><h3>4. Nghe thử</h3>' +
     '<div class="bar"><button class="btn play" id="pl" type="button">Nghe</button><button class="btn ghost" id="sp" type="button">Dừng</button>' +
     '<button class="btn ghost" id="pv" type="button" title="Quay lại phương án trước">‹ Trước</button><button class="btn ghost" id="rn" type="button">Phương án khác</button>' +
     '<span class="meta" id="mt"></span></div><canvas id="cv" role="img" aria-label="Biểu đồ giai điệu"></canvas><div class="msg" id="ms"></div>' +
     '<div class="chart" id="ct"></div></section>' +
-  '<section class="card" style="margin-top:14px"><h3>4. Tải về</h3><div class="dl">' +
+  '<section class="card" style="margin-top:14px"><h3>5. Tải về</h3><div class="dl">' +
     '<button class="btn" id="d1" type="button">MusicXML (.musicxml)</button><button class="btn ghost" id="d2" type="button">XML (.xml)</button>' +
     '<button class="btn ghost" id="d3" type="button">MIDI (.mid)</button><button class="btn ghost" id="d4" type="button">Âm thanh (.wav)</button>' +
     '<button class="btn ghost" id="d5" type="button">Lời và hợp âm (.txt)</button><button class="btn ghost" id="da" type="button">Tải tất cả</button></div>' +
@@ -870,7 +994,7 @@ function mount(host, cfg) {
 
   var $ = function (id) { return root.getElementById ? root.getElementById(id) : root.querySelector('#' + id); };
   var state = { style: 'ballad', mode: 'minor', range: 'low', seed: 1, tempo: 0, hist: [] };
-  var song = null, ctx = null, bus = null, timer = 0, raf = 0, t0 = 0, notes = [], ptr = 0, playing = false;
+  var an = null, song = null, ctx = null, bus = null, timer = 0, raf = 0, t0 = 0, notes = [], ptr = 0, playing = false;
 
   // --- dựng điều khiển
   var stBox = $('st');
@@ -890,7 +1014,8 @@ function mount(host, cfg) {
   function readOpts() {
     return { title: $('ti').value.trim() || 'Bài thơ', lyrics: $('ly').value, style: state.style, tonic: +$('tn').value, mode: state.mode,
              tempo: state.tempo, range: state.range, intro: +$('in').value, harmony: $('hm').checked, strings: $('sg').checked,
-             keep: $('kp').checked, seed: state.seed, lead: $('ld').value, comp: $('cp').value };
+             keep: $('kp').checked, seed: state.seed, lead: $('ld').value, comp: $('cp').value,
+             dyn: ($('ad').checked && an && an.secInfo) ? an.secInfo.map(function (x) { return x.dyn; }) : null };
   }
   function save() {
     try { localStorage.setItem('tnx_v1', JSON.stringify({ o: readOpts(), seed: state.seed })); } catch (e) {}
@@ -971,7 +1096,7 @@ function mount(host, cfg) {
     $('ct').innerHTML = h;
   }
   function regen() {
-    stop(); save();
+    stop(); renderAnalysis(); save();
     var opts = readOpts();
     song = generate(opts);
     var empty = song.empty;
@@ -980,6 +1105,33 @@ function mount(host, cfg) {
     $('mt').textContent = song.keyName + ' · ' + song.styleName + ' · ' + song.tempo + ' bpm · ' + song.beats + '/4 · ' + song.nBars + ' ô nhịp · phương án ' + state.seed;
     $('tpo').textContent = song.tempo + ' bpm'; $('tp').value = song.tempo;
     renderChart(); draw(null);
+  }
+
+  function renderAnalysis() {
+    an = analyze($('ly').value); var box = $('an'), D = function (t) { return '<h4>' + t + '</h4>'; };
+    $('ap').disabled = an.empty;
+    if (an.empty) { box.innerHTML = '<p>Nhập lời để nhạc sĩ phân tích.</p>'; return; }
+    var h = D('Lời hát') + '<p>' + an.nSecs + ' đoạn, ' + an.nLines + ' câu, ' + an.nWords + ' chữ (trung bình ' + an.wpl.toFixed(1) + ' chữ mỗi câu). Thanh bằng chiếm ' + Math.round(an.bang * 100) + '%, ' +
+      (an.bang > 0.55 ? 'nên giai điệu hợp êm, ít nhảy.' : 'nên có thể cho giai điệu nhiều nhấn nhá.') + '</p>';
+    h += '<p>Thanh điệu: ' + Object.keys(an.tones).map(function (k) { return TONE_VI[k] + ' ' + an.tones[k]; }).join(', ') + '.<br>Chữ cuối câu: ' +
+      Object.keys(an.ends).filter(function (k) { return an.ends[k]; }).map(function (k) { return TONE_VI[k] + ' ' + an.ends[k]; }).join(', ') +
+      '. Cuối câu đi xuống ' + an.cadence.down + ', đi lên ' + an.cadence.up + ', giữ nốt ' + an.cadence.flat + '.</p>';
+    h += '<p>Gieo vần cuối câu: ' + (an.rhymePct >= 0.25 ? 'khá rõ (' + Math.round(an.rhymePct * 100) + '% cặp câu liền kề)' : 'không rõ (' + Math.round(an.rhymePct * 100) + '%), nên nhấn bằng nhịp điệu thay vì vần') + '.' +
+      (an.hooks.length ? ' Cụm lặp có thể làm móc: ' + an.hooks.map(escH).join(', ') + '.' : '') + '</p>';
+    an.notes.forEach(function (t) { h += '<p>• ' + escH(t) + '</p>'; });
+    h += D('Cảm xúc nhận ra từ từ khóa');
+    an.moods.filter(function (m) { return m.n; }).forEach(function (m) { h += '<span class="tag"><b>' + escH(m.name) + '</b> ' + m.n + '</span>'; });
+    if (!an.strongMood) h += '<p>Lời có ít từ gợi cảm xúc, nên độ tin cậy thấp.</p>';
+    h += D('Giọng') + '<p><b>' + (an.mode === 'minor' ? 'Thứ' : 'Trưởng') + '</b> (độ tin cậy ' + an.conf + '). ' + escH(an.modeWhy) + '</p>';
+    h += D('Điệu nên chọn') + '<ul>' + an.styles.slice(0, 3).map(function (x, i) {
+      return '<li><b>' + STYLES[x.key].name + '</b> (' + STYLES[x.key].tempo + ' bpm, ' + STYLES[x.key].beats + '/4): ' + escH(x.why) + ' <button class="link" data-st="' + x.key + '" type="button">' + (i ? 'Dùng điệu này' : 'Điệu đề xuất') + '</button></li>';
+    }).join('') + '</ul>';
+    h += D('Mạch cảm xúc từng đoạn') + '<table><tr><th>Đoạn</th><th>Số câu</th><th>Cảm xúc</th><th>Cường độ</th><th>Hợp âm đề xuất</th></tr>' +
+      an.secInfo.map(function (x, i) { return '<tr><td>' + escH(x.label) + (i === an.peak && an.nSecs >= 3 ? ' (cao trào)' : '') + '</td><td>' + x.lines + '</td><td>' + escH(x.mood) +
+        '</td><td>' + x.dyn + ' (' + x.energy + ')</td><td>' + x.chords.join(' – ') + '</td></tr>'; }).join('') + '</table>';
+    if (an.nSecs >= 3 && !an.hasLabels) h += '<p class="hint">Nút áp dụng sẽ đặt tên đoạn cao trào là [Điệp khúc] để đoạn đó dùng vòng hợp âm khác. Bạn có thể xóa dòng này trong ô lời.</p>';
+    h += '<p class="hint">Chưa làm: tự chuyển giọng và tab guitar. Hợp âm ở bảng chỉ là đề xuất, công cụ chỉ đổi vòng hợp âm cho đoạn tên "Điệp khúc" hoặc "Cầu".</p>';
+    box.innerHTML = h;
   }
   var deb = 0; function later() { clearTimeout(deb); deb = setTimeout(regen, 350); }
 
@@ -995,6 +1147,18 @@ function mount(host, cfg) {
   ['tn', 'in', 'hm', 'sg', 'kp', 'ld', 'cp'].forEach(function (id) { $(id).addEventListener('change', regen); });
   $('ly').addEventListener('input', later); $('ti').addEventListener('input', later);
   $('sm').addEventListener('click', function () { $('ly').value = SAMPLE; $('ti').value = 'Trăm năm trong cõi người ta'; regen(); });
+
+  $('an').addEventListener('click', function (e) { var b = e.target.closest('[data-st]'); if (!b) return; state.style = b.dataset.st; state.tempo = 0; setPressed(stBox, 0, state.style); regen(); });
+  $('ap').addEventListener('click', function () {
+    if (!an || an.empty) return;
+    state.style = an.styles[0].key; state.mode = an.mode; state.tempo = 0; $('tn').value = an.tonic;
+    setPressed(stBox, 0, state.style); setPressed($('md'), 0, state.mode);
+    if (an.nSecs >= 3 && !an.hasLabels && an.peak >= 0) {
+      var parts = $('ly').value.replace(/\r/g, '').split(/\n\s*\n/); if (parts.length === an.nSecs) { parts[an.peak] = '[Điệp khúc]\n' + parts[an.peak]; $('ly').value = parts.join('\n\n'); }
+    }
+    regen();
+  });
+  $('ad').addEventListener('change', regen);
   $('pl').addEventListener('click', play); $('sp').addEventListener('click', stop);
   $('rn').addEventListener('click', function () { state.hist.push(state.seed); state.seed = 1 + Math.floor(Math.random() * 9999); regen(); play(); });
   $('pv').addEventListener('click', function () { if (state.hist.length) { state.seed = state.hist.pop(); regen(); play(); } });
@@ -1033,7 +1197,7 @@ function mount(host, cfg) {
   regen();
 }
 
-G.TNX = { generate: generate, toMusicXML: toMusicXML, toMIDI: toMIDI, toUST: toUST, toSuno: toSuno, parseLyrics: parseLyrics, flatten: flatten,
+G.TNX = { generate: generate, toMusicXML: toMusicXML, toMIDI: toMIDI, toUST: toUST, toSuno: toSuno, parseLyrics: parseLyrics, analyze: analyze, flatten: flatten,
           renderWav: renderWav, slug: slug, STYLES: STYLES, STYLE_ORDER: STYLE_ORDER, DEFAULTS: DEFAULTS, mount: mount };
 if (typeof module !== 'undefined') module.exports = G.TNX;
 if (typeof document !== 'undefined') {
