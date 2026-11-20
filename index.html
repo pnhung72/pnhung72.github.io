@@ -3,11 +3,20 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Nhập lời thơ, chọn điệu để tự tạo giai điệu, hòa âm, nghe thử và tải về MusicXML, MIDI, WAV, UST.">
 <title>Phổ nhạc từ lời thơ</title>
-<style>body{margin:0;padding:12px;background:#d9e6e3}</style>
+<style>body{margin:0;padding:12px;background:#d9e6e3}#tnx-err{display:none;padding:12px;background:#fff3cd;border:1px solid #e0c36a;border-radius:8px;font-family:sans-serif}</style>
 </head>
 <body>
 <div id="tnx-app">Đang tải công cụ phổ nhạc...</div>
-<script src="tho-nhac.js"></script>
+<div id="tnx-err"></div>
+<noscript>Công cụ cần bật JavaScript để hoạt động.</noscript>
+<script>
+window.addEventListener('error', function (e) {
+  var box = document.getElementById('tnx-err');
+  if (box && !window.TNX) { box.style.display = 'block'; box.textContent = 'Không tải được công cụ: ' + (e.message || 'lỗi tệp tho-nhac.js') + '. Hãy thử nhấn Ctrl + F5.'; }
+});
+</script>
+<script src="tho-nhac.js?v=2" onerror="document.getElementById('tnx-err').style.display='block';document.getElementById('tnx-err').textContent='Không tìm thấy tệp tho-nhac.js. Hãy kiểm tra tên tệp trên GitHub.';"></script>
 </body>
 </html>
