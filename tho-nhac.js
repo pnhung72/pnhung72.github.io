@@ -3,6 +3,7 @@
  * Nhập lời thơ, chọn điệu → tự tạo giai điệu + hòa âm phối khí → nghe thử → tải về
  * MusicXML (.musicxml / .xml) và MIDI (.mid) để mở trong Guitar Pro 8, kèm WAV và bảng hợp âm.
  * Không cần thư viện ngoài.
+ * Bản tối ưu: tách chữ ở dấu …, giai điệu mượt hơn, UST có hơi thở + vibrato.
  */
 (function (G) {
 'use strict';
@@ -51,7 +52,7 @@ function parseLyrics(text) {
     if (!l) { push(); return; }
     var m = l.match(/^\[(.+)\]$/);
     if (m) { push(); label = m[1].trim(); return; }
-    var words = l.split(/[\s\-–—\/]+/).map(function (w) {
+    var words = l.split(/[\s\-–—\/…]+|\.{2,}/).map(function (w) {
       return w.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
     }).filter(Boolean);
     if (!words.length) return;
@@ -131,7 +132,7 @@ var DEFAULTS = {
   range: 'low', intro: 2, harmony: true, strings: true, keep: true, seed: 1,
   lead: 'voice', comp: 'auto'
 };
-var TONE_OFF = { ngang:0, sac:2, huyen:-2, hoi:-1, nga:1, nang:-3 };
+var TONE_OFF = { ngang:0, sac:1, huyen:-1, hoi:-1, nga:1, nang:-2 };
 var DRUM_NAMES = { 36:'Kick', 37:'Side stick', 38:'Snare', 42:'Hi-hat đóng', 46:'Hi-hat mở', 49:'Crash', 51:'Ride', 56:'Cowbell' };
 var DRUM_DISPLAY = { 36:['F',4,'normal'], 37:['C',5,'x'], 38:['C',5,'normal'], 42:['G',5,'x'],
                      46:['G',5,'circle-x'], 49:['A',5,'x'], 51:['F',5,'x'], 56:['A',4,'triangle'] };
@@ -206,7 +207,7 @@ function generate(opts) {
       var tone = ev.syl.tone;
       var target = center + lvl + TONE_OFF[tone];
       if (tone === 'ngang' && rng() < 0.35) target += rng() < 0.5 ? 1 : -1;
-      var delta = Math.max(-3, Math.min(3, target - prev));
+      var delta = Math.max(-2, Math.min(2, target - prev));
       if (delta === 0) { if (++same >= 2) { delta = prev >= center ? -1 : 1; same = 0; } } else same = 0;
       var idx = prev + delta, pcs = ev.bar.chord.pcs, j, best;
       if (ev.strong) {
@@ -227,6 +228,10 @@ function generate(opts) {
         if (best !== null) idx = best;
       }
       idx = Math.max(center - 4, Math.min(center + 6, idx));
+      // tránh nốt dẫn (quãng 2 tăng) khi hợp âm không có nốt đó
+      if (key.mode === 'minor' && !ev.last && mod(scale[idx] - key.pc, 12) === 11 && ev.bar.chord.pcs.indexOf(scale[idx] % 12) < 0) {
+        idx = Math.abs(idx - 1 - target) <= Math.abs(idx + 1 - target) ? idx - 1 : idx + 1;
+      }
       ev.idx = idx; ev.midi = scale[idx]; prev = idx;
       melody.push(ev);
     });
@@ -679,12 +684,18 @@ function toUST(song, noTone) {
   out.push('[#VERSION]', 'UST Version1.2', '[#SETTING]', 'Tempo=' + Number(song.tempo).toFixed(2), 'Tracks=1',
     'ProjectName=' + (noTone ? plain(song.title) : song.title), 'VoiceDir=%VOICE%', 'OutFile=', 'CacheDir=',
     'Tool1=wavtool.exe', 'Tool2=resampler.exe', 'Mode2=True');
-  melodyOf(song).forEach(function (e) {
-    var t0 = e.t * T16, len = e.d * T16;
+  var mel = melodyOf(song);
+  mel.forEach(function (e, i) {
+    var t0 = e.t * T16, len = e.d * T16, nx = mel[i + 1], vib = false;
     if (t0 > cur) note(t0 - cur, 'R', 60);
     else if (t0 < cur) { len -= (cur - t0); t0 = cur; }
     if (len <= 0) return;
+    if (len >= 900) {                                   // nốt dài: lấy hơi cuối nốt + vibrato nhẹ
+      vib = true;
+      if (nx && nx.t * T16 <= t0 + len + 1) len -= 60;
+    }
     note(len, noTone ? plain(e.lyric || 'a') : (e.lyric || 'a'), e.n[0]);
+    if (vib) out.push('VBR=65,180,30,25,25,0,0,0');
     cur = t0 + len;
   });
   note(480, 'R', 60);
