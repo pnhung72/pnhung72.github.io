@@ -661,6 +661,55 @@ function encodeWav(buf) {
   return new Uint8Array(out.buffer);
 }
 
+/* ================= 7b. GIỌNG HÁT AI: UST (UTAU/OpenUtau) và PROMPT SUNO/UDIO ================= */
+function plain(s) {
+  return String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D').toLowerCase();
+}
+function melodyOf(song) {
+  var tr = song.tracks.filter(function (t) { return t.id === 'mel'; })[0];
+  return tr ? tr.voices[0].slice().sort(function (a, b) { return a.t - b.t; }) : [];
+}
+// UST: 480 tick = 1 phách (nốt đen); 1 móc đơn (1/16) = 120 tick. Quãng nghỉ ghi bằng Lyric=R.
+function toUST(song, noTone) {
+  var T16 = 120, nl = '\r\n', cur = 0, idx = 0, out = [];
+  function note(len, lyric, num) {
+    var id = ('0000' + idx++).slice(-4);
+    out.push('[#' + id + ']', 'Length=' + len, 'Lyric=' + lyric, 'NoteNum=' + num, 'PreUtterance=');
+  }
+  out.push('[#VERSION]', 'UST Version1.2', '[#SETTING]', 'Tempo=' + Number(song.tempo).toFixed(2), 'Tracks=1',
+    'ProjectName=' + (noTone ? plain(song.title) : song.title), 'VoiceDir=%VOICE%', 'OutFile=', 'CacheDir=',
+    'Tool1=wavtool.exe', 'Tool2=resampler.exe', 'Mode2=True');
+  melodyOf(song).forEach(function (e) {
+    var t0 = e.t * T16, len = e.d * T16;
+    if (t0 > cur) note(t0 - cur, 'R', 60);
+    else if (t0 < cur) { len -= (cur - t0); t0 = cur; }
+    if (len <= 0) return;
+    note(len, noTone ? plain(e.lyric || 'a') : (e.lyric || 'a'), e.n[0]);
+    cur = t0 + len;
+  });
+  note(480, 'R', 60);
+  out.push('[#TRACKEND]');
+  return '\ufeff' + out.join(nl) + nl;
+}
+var STYLE_EN = { ballad:'Vietnamese ballad, gentle, emotional', slowrock:'slow rock ballad', chachacha:'cha cha cha, Latin, Vietnamese',
+  bolero:'Vietnamese bolero, nostalgic', rumba:'rumba, Latin ballad, Vietnamese', disco:'disco, upbeat, Vietnamese',
+  valse:'waltz 3/4, Vietnamese', bossa:'bossa nova, smooth, Vietnamese', pop:'Vietnamese pop rock' };
+function sectionTag(label, i) {
+  if (/^Đoạn\s*\d+$/i.test(label)) return 'Verse ' + (i + 1);
+  if (/điệp/i.test(label)) return 'Chorus';
+  if (/dạo|intro/i.test(label)) return 'Interlude';
+  if (/kết|outro/i.test(label)) return 'Outro';
+  return label;
+}
+function toSuno(song) {
+  var k = song.key, keyTxt = k.names[k.pc] + (k.mode === 'minor' ? ' minor' : ' major');
+  var style = (STYLE_EN[song.style] || 'Vietnamese ballad') + ', ' + song.tempo + ' bpm, ' + keyTxt + ', Vietnamese lyrics, clear vocal';
+  var lyr = song.secs.map(function (sec, i) {
+    return '[' + sectionTag(sec.label, i) + ']\n' + sec.lines.map(function (ws) { return ws.map(function (w) { return w.text; }).join(' '); }).join('\n');
+  }).join('\n\n');
+  return 'TIÊU ĐỀ\n' + song.title + '\n\nPHONG CÁCH (dán vào ô Style of Music)\n' + style + '\n\nLỜI (dán vào ô Lyrics)\n' + lyr + '\n';
+}
+
 function slug(s) {
   return String(s || 'bai_tho').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D')
     .replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'bai_tho';
@@ -668,61 +717,54 @@ function slug(s) {
 
 /* ================= 8. GIAO DIỆN ================= */
 var CSS = `
-:host{display:block;font-family:inherit}
+:host{all:initial;display:block;font-family:'Be Vietnam Pro','Segoe UI',system-ui,sans-serif;color:#0c2b33}
 *{box-sizing:border-box}
-.app{--ink:#1f2d3d;--navy:#2c3e50;--acc:#d9560b;--accD:#b9460a;--tint:#f3f6f8;--paper:#fff;--line:#dde3e9;--mute:#5f6f7f;--hi:#fff1e6;
-  color:var(--ink);font-size:15px;line-height:1.5;container-type:inline-size}
-.sub{margin:0 0 12px;color:var(--mute);font-size:14px}
-.card{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:16px 18px;box-shadow:0 1px 2px rgba(31,45,61,.05)}
-.card h3{font-size:16px;margin:0 0 12px;font-weight:700;color:var(--navy);display:flex;align-items:center;gap:8px}
-.card h3:before{content:"";width:4px;height:16px;border-radius:2px;background:var(--acc)}
-.stack{display:grid;gap:14px;align-content:start}
-.grid{display:grid;grid-template-columns:minmax(0,1fr);gap:14px;margin-top:14px}
-@container (min-width:760px){.grid{grid-template-columns:minmax(0,5fr) minmax(0,7fr)}.out{grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important}}
-.dock{position:sticky;top:8px;z-index:20;background:var(--navy);color:#fff;border-radius:12px;padding:10px 14px;box-shadow:0 6px 18px rgba(31,45,61,.28)}
-.dock .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-.dock .meta{margin-left:auto;font-size:13px;color:#cbd6e0}
-.pg{height:4px;border-radius:2px;background:rgba(255,255,255,.18);margin-top:9px;overflow:hidden}.pg b{display:block;height:100%;width:0;background:var(--acc)}
-label.f{display:block;font-size:13px;font-weight:500;color:var(--mute);margin:0 0 4px}
-input[type=text],select,textarea{width:100%;font:inherit;color:var(--ink);background:#fff;border:1px solid var(--line);border-radius:8px;padding:8px 10px}
-textarea{font-family:'Noto Serif',Georgia,serif;font-size:17px;line-height:30px;min-height:250px;resize:vertical;
-  background-image:repeating-linear-gradient(transparent 0 29px,#e6ecf1 29px 30px);background-attachment:local;padding-top:2px}
-input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-visible{outline:3px solid #ffb27a;outline-offset:1px}
+.app{--ink:#0c2b33;--sea:#0b6e74;--seaD:#084f55;--foam:#eaf2f0;--paper:#fbfdfc;--sun:#e8a317;--line:#c9dcd9;--mute:#587178;
+  background:var(--foam);color:var(--ink);padding:18px;border-radius:14px;font-size:15px;line-height:1.5;max-width:1100px;margin:0 auto}
+h2{font-size:22px;margin:0 0 2px;font-weight:700;letter-spacing:-.01em}
+.sub{margin:0 0 16px;color:var(--mute);font-size:14px}
+.grid{display:grid;grid-template-columns:1fr;gap:14px}
+@media(min-width:900px){.grid{grid-template-columns:minmax(0,5fr) minmax(0,6fr)}}
+.card{background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+.card h3{font-size:15px;margin:0 0 10px;font-weight:700;color:var(--seaD)}
+label.f{display:block;font-size:13px;color:var(--mute);margin:10px 0 4px}
+input[type=text],select,textarea{width:100%;font:inherit;color:var(--ink);background:#fff;border:1px solid var(--line);border-radius:7px;padding:8px 10px}
+textarea{font-family:'Noto Serif',Georgia,serif;font-size:17px;line-height:30px;min-height:300px;resize:vertical;
+  background-image:repeating-linear-gradient(transparent 0 29px,#dbe9e6 29px 30px);background-attachment:local;padding-top:2px}
+input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-visible{outline:3px solid var(--sun);outline-offset:1px}
 .hint{font-size:13px;color:var(--mute);margin:8px 0 0}
-.chips{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:8px}
-.chip{font:inherit;text-align:left;border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:9px;padding:8px 10px;cursor:pointer;transition:border-color .15s,background .15s}
-.chip:hover{border-color:var(--acc)}
+.chips{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.chip{font:inherit;text-align:left;border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:8px;padding:8px 10px;cursor:pointer}
 .chip b{display:block;font-size:14px}.chip span{font-size:12px;color:var(--mute)}
-.chip[aria-pressed=true]{background:var(--navy);border-color:var(--navy);color:#fff;box-shadow:inset 0 -3px 0 var(--acc)}.chip[aria-pressed=true] span{color:#cbd6e0}
-.opts{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px 14px;margin-top:14px}
-.seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#fff}
+.chip[aria-pressed=true]{background:var(--sea);border-color:var(--sea);color:#fff}.chip[aria-pressed=true] span{color:#d6efee}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:end}.row>*{flex:1 1 120px}
+.seg{display:flex;border:1px solid var(--line);border-radius:7px;overflow:hidden;background:#fff}
 .seg button{flex:1;font:inherit;border:0;background:transparent;padding:8px 6px;cursor:pointer;color:var(--ink)}
-.seg button+button{border-left:1px solid var(--line)}
-.seg button[aria-pressed=true]{background:var(--navy);color:#fff}
-.chks{display:grid;gap:2px;margin-top:12px;padding-top:10px;border-top:1px dashed var(--line)}
-.chk{display:flex;gap:8px;align-items:center;margin:4px 0;font-size:14px}.chk input{width:18px;height:18px;accent-color:var(--acc)}
-input[type=range]{width:100%;accent-color:var(--acc)}
-.tempo{display:flex;align-items:center;gap:10px}.tempo output{min-width:74px;font-variant-numeric:tabular-nums;font-weight:600}
-.link{font:inherit;background:none;border:0;color:var(--acc);text-decoration:underline;cursor:pointer;padding:0}
-.btn{font:inherit;font-weight:600;border:1px solid var(--navy);background:var(--navy);color:#fff;border-radius:8px;padding:9px 16px;cursor:pointer}
-.btn:hover{background:#1f2d3d}.btn.ghost{background:#fff;color:var(--navy)}.btn.ghost:hover{background:var(--tint)}
-.dock .btn.ghost{background:transparent;color:#fff;border-color:rgba(255,255,255,.35)}.dock .btn.ghost:hover{background:rgba(255,255,255,.12)}
+.seg button[aria-pressed=true]{background:var(--seaD);color:#fff}
+.chk{display:flex;gap:8px;align-items:center;margin:8px 0 0;font-size:14px}.chk input{width:18px;height:18px;accent-color:var(--sea)}
+input[type=range]{width:100%;accent-color:var(--sea)}
+.tempo{display:flex;align-items:center;gap:10px}.tempo output{min-width:84px;font-variant-numeric:tabular-nums}
+.link{font:inherit;background:none;border:0;color:var(--sea);text-decoration:underline;cursor:pointer;padding:0}
+.btn{font:inherit;font-weight:600;border:1px solid var(--seaD);background:var(--sea);color:#fff;border-radius:8px;padding:9px 16px;cursor:pointer}
+.btn:hover{background:var(--seaD)}.btn.ghost{background:#fff;color:var(--seaD)}.btn.ghost:hover{background:#e3f0ee}
 .btn[disabled]{opacity:.45;cursor:not-allowed}
-.play{background:var(--acc);border-color:var(--acc);color:#fff;min-width:110px}.play:hover{background:var(--accD)}
-.out{display:grid;grid-template-columns:minmax(0,1fr);gap:14px;margin-top:14px}
-canvas{display:block;width:100%;height:170px;background:var(--ink);border-radius:9px}
-.chart{display:grid;gap:2px;max-height:430px;overflow:auto;padding-right:4px}
-.sec{font-size:13px;font-weight:700;color:var(--acc);margin:12px 0 2px}.sec:first-child{margin-top:0}
-.ln{border-left:4px solid transparent;padding:4px 10px;border-radius:0 8px 8px 0}
-.ln.on{border-left-color:var(--acc);background:var(--hi)}
-.ch{display:flex;flex-wrap:wrap;gap:6px;font-weight:700;color:var(--navy);font-size:14px}
-.ch i{font-style:normal;background:var(--tint);border-radius:5px;padding:0 7px}.ch i.on{background:var(--acc);color:#fff}
+.play{background:var(--sun);border-color:#b87f0b;color:#2a1c00;min-width:110px}.play:hover{background:#f2b52d}
+.bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:0 0 10px}
+.bar .meta{margin-left:auto;color:var(--mute);font-size:13px}
+canvas{display:block;width:100%;height:150px;background:#0e3a43;border-radius:8px}
+.chart{display:grid;gap:2px;margin-top:6px}
+.sec{font-size:12px;font-weight:700;color:var(--sea);margin:12px 0 2px}
+.ln{border-left:4px solid transparent;padding:4px 10px;border-radius:0 6px 6px 0}
+.ln.on{border-left-color:var(--sun);background:#fff4d9}
+.ch{display:flex;flex-wrap:wrap;gap:6px;font-weight:700;color:var(--seaD);font-size:14px}
+.ch i{font-style:normal;background:#dceceb;border-radius:5px;padding:0 7px}.ch i.on{background:var(--sun);color:#2a1c00}
 .tx{font-family:'Noto Serif',Georgia,serif;font-size:17px}.ln.inst .tx{color:var(--mute);font-family:inherit;font-size:13px}
 .dl{display:flex;flex-wrap:wrap;gap:8px}
-.msg{color:#a14400;font-size:14px;margin:8px 0 0;min-height:1em}
-details{margin-top:12px;font-size:14px}summary{cursor:pointer;color:var(--navy);font-weight:600}
+.note{font-size:13px;color:var(--mute);margin:10px 0 0}
+.msg{color:#8a3b00;font-size:14px;margin:6px 0 0;min-height:1em}
+details{margin-top:10px;font-size:14px}summary{cursor:pointer;color:var(--seaD);font-weight:600}
 details p{margin:6px 0}
-code{background:var(--tint);border-radius:4px;padding:0 5px}
+code{background:#e5efed;border-radius:4px;padding:0 5px}
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
 `;
 var SAMPLE = 'Trăm năm trong cõi người ta\nChữ tài chữ mệnh khéo là ghét nhau\n\nTrải qua một cuộc bể dâu\nNhững điều trông thấy mà đau đớn lòng';
@@ -741,33 +783,39 @@ function mount(host, cfg) {
   }
   var root = host.attachShadow ? host.attachShadow({ mode: 'open' }) : host;
   root.innerHTML = '<style>' + CSS + '</style><div class="app">' +
-  '<div class="dock"><div class="bar"><button class="btn play" id="pl" type="button">Nghe</button><button class="btn ghost" id="sp" type="button">Dừng</button>' +
-    '<button class="btn ghost" id="pv" type="button" title="Quay lại phương án trước">‹ Trước</button><button class="btn ghost" id="rn" type="button">Phương án khác</button>' +
-    '<span class="meta" id="mt"></span></div><div class="pg"><b id="pg"></b></div></div>' +
+  '<h2>Phổ nhạc từ lời thơ</h2><p class="sub">Nhập lời, chọn điệu. Máy tự soạn giai điệu và phối khí để nghe thử, rồi tải về mở trong Guitar Pro 8.</p>' +
   '<div class="grid"><section class="card"><h3>1. Lời thơ</h3>' +
     '<label class="f" for="ti">Tên bài</label><input type="text" id="ti" placeholder="Ví dụ: Nha Trang Ngọc Xanh">' +
-    '<label class="f" for="ly" style="margin-top:12px">Lời (mỗi dòng là một câu hát)</label><textarea id="ly" spellcheck="false" placeholder="Gõ hoặc dán lời thơ vào đây"></textarea>' +
-    '<p class="hint">Mỗi chữ là một nốt. Dòng trống để sang đoạn mới. Đặt tên đoạn bằng một dòng như <code>[Điệp khúc]</code>. ' +
-    '<button class="link" id="sm" type="button">Nạp bài mẫu</button></p><div class="msg" id="ms"></div></section>' +
-  '<div class="stack"><section class="card"><h3>2. Chọn điệu</h3><div class="chips" id="st" role="group" aria-label="Chọn điệu"></div></section>' +
-  '<section class="card"><h3>Tuỳ chỉnh</h3><div class="opts" style="margin-top:0">' +
-    '<div><label class="f" for="tn">Chủ âm</label><select id="tn"></select></div>' +
+    '<label class="f" for="ly">Lời (mỗi dòng là một câu hát)</label><textarea id="ly" spellcheck="false" placeholder="Gõ hoặc dán lời thơ vào đây"></textarea>' +
+    '<p class="hint">Mỗi chữ là một nốt. Dòng trống để sang đoạn mới. Có thể đặt tên đoạn bằng một dòng như <code>[Điệp khúc]</code>. ' +
+    '<button class="link" id="sm" type="button">Nạp bài mẫu</button></p></section>' +
+  '<section class="card"><h3>2. Điệu và tuỳ chỉnh</h3><div class="chips" id="st" role="group" aria-label="Chọn điệu"></div>' +
+    '<div class="row"><div><label class="f" for="tn">Chủ âm</label><select id="tn"></select></div>' +
     '<div><label class="f">Thang âm</label><div class="seg" id="md"><button type="button" data-v="minor">Thứ (buồn)</button><button type="button" data-v="major">Trưởng (vui)</button></div></div>' +
-    '<div><label class="f">Giọng hát</label><div class="seg" id="rg"><button type="button" data-v="low">Trầm</button><button type="button" data-v="high">Cao</button></div></div>' +
-    '<div><label class="f" for="tp">Tốc độ</label><div class="tempo"><input type="range" id="tp" min="50" max="160" step="1"><output id="tpo"></output></div><button class="link" id="tpa" type="button">Theo điệu</button></div>' +
-    '<div><label class="f" for="ld">Hát giai điệu bằng</label><select id="ld"><option value="voice">Giọng hát (ooh)</option><option value="flute">Sáo</option><option value="sax">Saxophone</option><option value="violin">Violin</option><option value="piano">Piano</option><option value="nylon">Guitar nylon</option></select></div>' +
+    '<div><label class="f">Giọng hát</label><div class="seg" id="rg"><button type="button" data-v="low">Trầm</button><button type="button" data-v="high">Cao</button></div></div></div>' +
+    '<label class="f" for="tp">Tốc độ</label><div class="tempo"><input type="range" id="tp" min="50" max="160" step="1"><output id="tpo"></output><button class="link" id="tpa" type="button">Theo điệu</button></div>' +
+    '<div class="row"><div><label class="f" for="ld">Nhạc cụ hát giai điệu</label><select id="ld"><option value="voice">Giọng hát (ooh)</option><option value="flute">Sáo</option><option value="sax">Saxophone</option><option value="violin">Violin</option><option value="piano">Piano</option><option value="nylon">Guitar nylon</option></select></div>' +
     '<div><label class="f" for="cp">Nhạc cụ đệm</label><select id="cp"><option value="auto">Theo điệu</option><option value="nylon">Guitar nylon</option><option value="steel">Guitar thép</option><option value="clean">Guitar điện (clean)</option><option value="piano">Piano</option><option value="epiano">Piano điện</option></select></div>' +
     '<div><label class="f" for="in">Nhạc dạo đầu</label><select id="in"></select></div></div>' +
-    '<div class="chks"><label class="chk"><input type="checkbox" id="hm">Thêm bè quãng 3 (saxophone)</label>' +
+    '<label class="chk"><input type="checkbox" id="hm">Thêm bè quãng 3 (saxophone)</label>' +
     '<label class="chk"><input type="checkbox" id="sg">Thêm dàn dây nền</label>' +
-    '<label class="chk"><input type="checkbox" id="kp">Các đoạn có cùng số chữ dùng chung giai điệu</label></div></section></div></div>' +
-  '<div class="out"><section class="card"><h3>3. Giai điệu</h3><canvas id="cv" role="img" aria-label="Biểu đồ giai điệu"></canvas>' +
-    '<p class="hint">Vàng là giai điệu chính, xanh là bè. Vạch trắng chạy theo khi đang nghe.</p></section>' +
-  '<section class="card"><h3>Lời và hợp âm</h3><div class="chart" id="ct"></div></section></div>' +
+    '<label class="chk"><input type="checkbox" id="kp">Các đoạn có cùng số chữ dùng chung giai điệu</label></section></div>' +
+  '<section class="card" style="margin-top:14px"><h3>3. Nghe thử</h3>' +
+    '<div class="bar"><button class="btn play" id="pl" type="button">Nghe</button><button class="btn ghost" id="sp" type="button">Dừng</button>' +
+    '<button class="btn ghost" id="pv" type="button" title="Quay lại phương án trước">‹ Trước</button><button class="btn ghost" id="rn" type="button">Phương án khác</button>' +
+    '<span class="meta" id="mt"></span></div><canvas id="cv" role="img" aria-label="Biểu đồ giai điệu"></canvas><div class="msg" id="ms"></div>' +
+    '<div class="chart" id="ct"></div></section>' +
   '<section class="card" style="margin-top:14px"><h3>4. Tải về</h3><div class="dl">' +
     '<button class="btn" id="d1" type="button">MusicXML (.musicxml)</button><button class="btn ghost" id="d2" type="button">XML (.xml)</button>' +
     '<button class="btn ghost" id="d3" type="button">MIDI (.mid)</button><button class="btn ghost" id="d4" type="button">Âm thanh (.wav)</button>' +
     '<button class="btn ghost" id="d5" type="button">Lời và hợp âm (.txt)</button><button class="btn ghost" id="da" type="button">Tải tất cả</button></div>' +
+    '<h3 style="margin:14px 0 8px">Cho giọng hát AI</h3><div class="dl">' +
+    '<button class="btn" id="d6" type="button">UTAU / OpenUtau (.ust)</button>' +
+    '<button class="btn ghost" id="d7" type="button">Lời + prompt cho Suno / Udio</button></div>' +
+    '<label class="chk"><input type="checkbox" id="ub"> Bỏ dấu lời trong tệp .ust (dùng khi giọng hát không nhận chữ có dấu)</label>' +
+    '<details><summary>Cho AI hát lời thơ thế nào?</summary>' +
+    '<p><b>OpenUtau / UTAU:</b> mở OpenUtau, chọn <b>File → Open</b> rồi chọn tệp <code>.ust</code>; chọn giọng hát (voicebank) tiếng Việt cho rãnh. Mỗi nốt đã có sẵn một chữ. Nếu giọng không nhận chữ có dấu, hãy tích ô bỏ dấu rồi tải lại. Tệp <code>.musicxml</code> cũng mở được trong Synthesizer V hoặc ACE Studio (qua nhập MusicXML/MIDI) và giữ lời ở từng nốt.</p>' +
+    '<p><b>Suno / Udio:</b> bấm nút bên trên, dán phần phong cách và phần lời vào hai ô tương ứng. Các dịch vụ này tự sáng tác lại giai điệu nên sẽ không giống hệt bản ở đây. Nếu dịch vụ cho tải âm thanh lên làm mẫu thì dùng tệp <code>.wav</code>.</p></details>' +
     '<details><summary>Mở trong Guitar Pro 8 thế nào?</summary><p>Chọn <b>Tệp → Mở</b>, rồi chọn tệp <code>.musicxml</code> hoặc <code>.xml</code>. Tệp này giữ nguyên lời, hợp âm và từng rãnh nhạc cụ nên sửa được từng nốt. Tệp <code>.mid</code> mở được tương tự nhưng không có hợp âm hiển thị.</p>' +
     '<p>Âm thanh nghe thử ở trên là bản tổng hợp đơn giản. Khi mở trong Guitar Pro 8 bạn sẽ nghe bằng bộ âm thanh RSE chân thực hơn nhiều.</p></details></section></div>';
 
@@ -813,7 +861,7 @@ function mount(host, cfg) {
   function stop() {
     playing = false; clearInterval(timer); cancelAnimationFrame(raf);
     if (ctx) { try { ctx.close(); } catch (e) {} ctx = null; }
-    $('pl').textContent = 'Nghe'; mark(-1); if ($('pg')) $('pg').style.width = '0';
+    $('pl').textContent = 'Nghe'; mark(-1);
   }
   function play() {
     if (!song || song.empty) return; stop();
@@ -831,7 +879,7 @@ function mount(host, cfg) {
     }
     pump(); timer = setInterval(pump, 200);
     $('pl').textContent = 'Đang phát';
-    (function tick() { if (!playing) return; var sec = ctx.currentTime - t0; mark(sec); draw(sec); $('pg').style.width = Math.min(100, sec / total * 100) + '%'; raf = requestAnimationFrame(tick); })();
+    (function tick() { if (!playing) return; var sec = ctx.currentTime - t0; mark(sec); draw(sec); raf = requestAnimationFrame(tick); })();
   }
   function mark(sec) {
     var bi = sec < 0 ? -1 : Math.floor(sec / (song.barLen * 60 / song.tempo / 4));
@@ -854,7 +902,7 @@ function mount(host, cfg) {
     song.bars.forEach(function (b) { if (b.idx === 0) return; var x = Math.round(b.t / total * w) + 0.5; c.beginPath(); c.moveTo(x, 0); c.lineTo(x, h); c.stroke(); });
     song.tracks.forEach(function (tr, ti) {
       if (ti > 1 || (ti === 1 && tr.id !== 'har')) return;
-      c.fillStyle = ti === 0 ? '#ffa94d' : 'rgba(120,214,205,.75)';
+      c.fillStyle = ti === 0 ? '#f2c14e' : 'rgba(120,214,205,.75)';
       tr.voices[0].forEach(function (e) { c.fillRect(e.t / total * w, ny(e.n[0]) - 3, Math.max(2, e.d / total * w - 1), 6); });
     });
     if (sec != null && sec >= 0) {
@@ -878,7 +926,7 @@ function mount(host, cfg) {
     var opts = readOpts();
     song = generate(opts);
     var empty = song.empty;
-    ['pl', 'd1', 'd2', 'd3', 'd4', 'd5', 'da'].forEach(function (id) { $(id).disabled = empty; });
+    ['pl', 'd1', 'd2', 'd3', 'd4', 'd5', 'd6', 'd7', 'da'].forEach(function (id) { $(id).disabled = empty; });
     $('ms').textContent = empty ? 'Chưa có lời. Hãy nhập lời thơ để tạo nhạc.' : '';
     $('mt').textContent = song.keyName + ' · ' + song.styleName + ' · ' + song.tempo + ' bpm · ' + song.beats + '/4 · ' + song.nBars + ' ô nhịp · phương án ' + state.seed;
     $('tpo').textContent = song.tempo + ' bpm'; $('tp').value = song.tempo;
@@ -917,9 +965,15 @@ function mount(host, cfg) {
       $('ms').textContent = 'Đang tạo tệp âm thanh, vui lòng chờ vài giây...';
       renderWav(song, function (err, wav) { $('ms').textContent = err ? 'Không tạo được tệp WAV trên trình duyệt này.' : ''; if (!err) save_(base() + '.wav', wav, 'audio/wav'); cb(); });
     },
-    d5: function (cb) { save_(base() + '_loi_hop_am.txt', '\ufeff' + song.chart, 'text/plain;charset=utf-8'); cb(); }
+    d5: function (cb) { save_(base() + '_loi_hop_am.txt', '\ufeff' + song.chart, 'text/plain;charset=utf-8'); cb(); },
+    d6: function (cb) { save_(base() + '.ust', toUST(song, $('ub').checked), 'text/plain;charset=utf-8'); cb(); },
+    d7: function (cb) {
+      var txt = toSuno(song), ok = function () { $('ms').textContent = 'Đã chép lời và prompt vào bộ nhớ tạm. Hãy dán vào Suno hoặc Udio.'; cb(); },
+          fb = function () { save_(base() + '_suno.txt', '\ufeff' + txt, 'text/plain;charset=utf-8'); $('ms').textContent = 'Không chép được vào bộ nhớ tạm, đã tải tệp .txt về.'; cb(); };
+      try { navigator.clipboard.writeText(txt).then(ok, fb); } catch (e) { fb(); }
+    }
   };
-  ['d1', 'd2', 'd3', 'd4', 'd5'].forEach(function (id) { $(id).addEventListener('click', function () { jobs[id](function () {}); }); });
+  ['d1', 'd2', 'd3', 'd4', 'd5', 'd6', 'd7'].forEach(function (id) { $(id).addEventListener('click', function () { jobs[id](function () {}); }); });
   $('da').addEventListener('click', function () {
     var ids = ['d1', 'd3', 'd5', 'd4'], i = 0;
     (function next() { if (i < ids.length) jobs[ids[i++]](function () { setTimeout(next, 400); }); })();
@@ -930,7 +984,7 @@ function mount(host, cfg) {
   regen();
 }
 
-G.TNX = { generate: generate, toMusicXML: toMusicXML, toMIDI: toMIDI, parseLyrics: parseLyrics, flatten: flatten,
+G.TNX = { generate: generate, toMusicXML: toMusicXML, toMIDI: toMIDI, toUST: toUST, toSuno: toSuno, parseLyrics: parseLyrics, flatten: flatten,
           renderWav: renderWav, slug: slug, STYLES: STYLES, STYLE_ORDER: STYLE_ORDER, DEFAULTS: DEFAULTS, mount: mount };
 if (typeof module !== 'undefined') module.exports = G.TNX;
 if (typeof document !== 'undefined') {
