@@ -150,6 +150,7 @@ var BAR_TABLE = {
 function barRhythm(k, E, isLast) {          // độ dài các nốt (đơn vị móc đơn) trong 1 ô nhịp
   if (isLast) {
     if (k === 1) return [E];
+    if (k === 4 && E === 8) return [2, 2, 1, 3];     // tránh 2 móc đơn liền nhau làm chữ chồng lên nhau
     var last = Math.max(2, Math.min(E / 2, E - (k - 1)));
     return spread(E - last, k - 1).concat([last]);
   }
