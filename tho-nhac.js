@@ -3,7 +3,7 @@
  * Nhập lời thơ, chọn điệu → tự tạo giai điệu + hòa âm phối khí → nghe thử → tải về
  * MusicXML (.musicxml / .xml) và MIDI (.mid) để mở trong Guitar Pro 8, kèm WAV và bảng hợp âm.
  * Không cần thư viện ngoài.
- * Bản tối ưu: tách chữ ở dấu …, giai điệu mượt hơn, UST có hơi thở + vibrato.
+ * Bản tối ưu: tách chữ ở dấu …, giai điệu mượt hơn, UST có hơi thở + vibrato; MusicXML có hợp âm ở mọi ô nhịp, dấu luyến câu, dấu lấy hơi, cường độ, rit., fermata kết.
  */
 (function (G) {
 'use strict';
@@ -195,7 +195,7 @@ function generate(opts) {
     for (i = 0; i < B; i++) {
       var bar = bars[startBarIdx + i], k = sizes[i], rh = barRhythm(k, E, i === B - 1), off = 0;
       for (var j = 0; j < k; j++, w++) {
-        evs.push({ bar: bar, t: bar.t + off * 2, d: rh[j] * 2, syl: words[w],
+        evs.push({ bar: bar, t: bar.t + off * 2, d: rh[j] * 2, syl: words[w], first: w === 0, fin: isFinal && w === n - 1,
                    strong: (st.beats === 4 ? off % 4 === 0 : off === 0) || rh[j] >= 3,
                    last: (i === B - 1 && j === k - 1) });
         off += rh[j];
@@ -278,9 +278,9 @@ function generate(opts) {
   /* ---------- các rãnh ---------- */
   var tracks = [];
   var leadProg = GM[o.lead] != null ? GM[o.lead] : 53;
-  var tMel = { id: 'mel', name: 'Giọng hát (giai điệu)', program: leadProg, channel: 0, synth: SYNTH[o.lead] || 'voice', clef: 'G', vol: 100, voices: [[]] };
+  var tMel = { id: 'mel', name: 'Giọng hát (giai điệu)', program: leadProg, channel: 0, synth: SYNTH[o.lead] || 'voice', clef: 'G', vol: 100, voices: [[]], chordsAll: true };
   melody.forEach(function (ev) {
-    tMel.voices[0].push({ t: ev.t, d: ev.d, n: [ev.midi], v: ev.strong ? 92 : 82, lyric: ev.syl.text });
+    tMel.voices[0].push({ t: ev.t, d: ev.d, n: [ev.midi], v: ev.strong ? 92 : 82, lyric: ev.syl.text, first: ev.first, last: ev.last, fin: ev.fin });
   });
   tracks.push(tMel);
   if (o.harmony) {
@@ -396,7 +396,14 @@ function noteXml(p) {
   x += '<voice>' + p.voice + '</voice>';
   if (!p.measure) { var ty = TYPES[p.dur]; x += '<type>' + ty[0] + '</type>' + (ty[1] ? '<dot/>' : ''); }
   if (p.perc != null) { var nh = (DRUM_DISPLAY[p.perc] || [0, 0, 'normal'])[2]; if (nh !== 'normal') x += '<notehead>' + nh + '</notehead>'; }
-  if ((p.tieS || p.tieE) && !p.rest) x += '<notations>' + (p.tieE ? '<tied type="stop"/>' : '') + (p.tieS ? '<tied type="start"/>' : '') + '</notations>';
+  var nt = '';
+  if (!p.rest) {
+    nt += (p.tieE ? '<tied type="stop"/>' : '') + (p.tieS ? '<tied type="start"/>' : '');
+    if (p.slur) nt += '<slur type="' + p.slur + '" number="1"/>';
+    if (p.breath) nt += '<articulations><breath-mark/></articulations>';
+    if (p.fermata) nt += '<fermata type="upright"/>';
+  }
+  if (nt) x += '<notations>' + nt + '</notations>';
   if (p.lyric) x += '<lyric number="1"><syllabic>single</syllabic><text>' + esc(p.lyric) + '</text></lyric>';
   return x + '</note>';
 }
@@ -453,14 +460,20 @@ function toMusicXML(song) {
           '<time><beats>' + song.beats + '</beats><beat-type>4</beat-type></time>' +
           (tr.clef === 'F' ? '<clef><sign>F</sign><line>4</line></clef>' : tr.clef === 'perc' ? '<clef><sign>percussion</sign><line>2</line></clef>' : '<clef><sign>G</sign><line>2</line></clef>') +
           '</attributes>';
+        if (ti === 0) x += '<direction placement="above"><direction-type><words font-weight="bold">' + esc(song.styleName) + '</words></direction-type></direction>';
         x += '<direction placement="above"><direction-type><metronome><beat-unit>quarter</beat-unit><per-minute>' + song.tempo + '</per-minute></metronome></direction-type><sound tempo="' + song.tempo + '"/></direction>';
       }
+      if (ti === 0 && bar.label === 'Kết') x += '<direction placement="above"><direction-type><words font-style="italic">rit.</words></direction-type><sound tempo="' + Math.round(song.tempo * 0.85) + '"/></direction>';
+      if (ti === 0 && bar.kind === 'line' && bar.label) {
+        var dy = ['mp', 'mf', 'f', 'mf'][bar.sec % 4];
+        x += '<direction placement="below"><direction-type><dynamics><' + dy + '/></dynamics></direction-type></direction>';
+      }
       if (ti === 0 && bar.label) x += '<direction placement="above"><direction-type><rehearsal>' + esc(bar.label) + '</rehearsal></direction-type></direction>';
-      if (tr.harmony) {
+      if (tr.harmony || tr.chordsAll) {
         var pv = b > 0 ? song.bars[b - 1].chord.name : '';
-        if (b === 0 || bar.chord.name !== pv || bar.label) {
+        if (tr.chordsAll || b === 0 || bar.chord.name !== pv || bar.label) {
           var c = bar.chord, rn = names[c.pc];
-          x += '<harmony><root><root-step>' + rn[0] + '</root-step>' + (rn.length > 1 ? '<root-alter>' + (rn[1] === '#' ? 1 : -1) + '</root-alter>' : '') + '</root><kind>' + XKIND[c.q] + '</kind></harmony>';
+          x += '<harmony><root><root-step>' + rn[0] + '</root-step>' + (rn.length > 1 ? '<root-alter>' + (rn[1] === '#' ? 1 : -1) + '</root-alter>' : '') + '</root><kind text="' + SUF[c.q] + '">' + XKIND[c.q] + '</kind></harmony>';
         }
       }
       tb.voices.forEach(function (per, vi) {
@@ -474,7 +487,10 @@ function toMusicXML(song) {
               var tieE = (ci > 0) || pc.contFrom, tieS = (ci < chunks.length - 1) || pc.contTo;
               ev.n.forEach(function (nn, k) {
                 s += noteXml({ chord: k > 0, midi: tr.drum ? null : nn, perc: tr.drum ? nn : null, names: names, pid: pid,
-                               dur: cd, voice: vnum, tieS: tieS, tieE: tieE, lyric: (k === 0 && !tieE) ? ev.lyric : null });
+                               dur: cd, voice: vnum, tieS: tieS, tieE: tieE, lyric: (k === 0 && !tieE) ? ev.lyric : null,
+                               slur: k === 0 && ev.first && ci === 0 && !pc.contFrom ? 'start' : (k === 0 && ev.last && ci === chunks.length - 1 && !pc.contTo ? 'stop' : null),
+                               breath: k === 0 && ev.last && !ev.fin && ci === chunks.length - 1 && !pc.contTo,
+                               fermata: k === 0 && ev.fin && ci === chunks.length - 1 && !pc.contTo });
               });
             });
             cursor = pc.off + pc.d;
