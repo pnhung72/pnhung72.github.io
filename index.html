@@ -3,20 +3,62 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Nhập lời thơ, chọn điệu để tự tạo giai điệu, hòa âm, nghe thử và tải về MusicXML, MIDI, WAV, UST.">
+<meta name="robots" content="noindex,nofollow">
 <title>Phổ nhạc từ lời thơ</title>
-<style>body{margin:0;padding:12px;background:#d9e6e3}#tnx-err{display:none;padding:12px;background:#fff3cd;border:1px solid #e0c36a;border-radius:8px;font-family:sans-serif}</style>
+<style>
+body{margin:0;padding:12px;background:#d9e6e3;font-family:'Segoe UI',system-ui,sans-serif;color:#0c2b33}
+#login{max-width:360px;margin:12vh auto;background:#fbfdfc;border:1px solid #c9dcd9;border-radius:12px;padding:22px}
+#login h1{font-size:20px;margin:0 0 4px}#login p{margin:0 0 14px;color:#587178;font-size:14px}
+#login input{width:100%;box-sizing:border-box;font:inherit;padding:10px;border:1px solid #c9dcd9;border-radius:7px}
+#login button{margin-top:12px;width:100%;font:inherit;font-weight:600;padding:10px;border:1px solid #084f55;background:#0b6e74;color:#fff;border-radius:8px;cursor:pointer}
+#login button[disabled]{opacity:.5;cursor:wait}
+#msg{min-height:1.2em;margin:10px 0 0;color:#a33b00;font-size:14px}
+</style>
 </head>
 <body>
-<div id="tnx-app">Đang tải công cụ phổ nhạc...</div>
-<div id="tnx-err"></div>
-<noscript>Công cụ cần bật JavaScript để hoạt động.</noscript>
+<form id="login" autocomplete="off">
+  <h1>Phổ nhạc từ lời thơ</h1>
+  <p>Nhập mật khẩu để sử dụng công cụ.</p>
+  <label for="pw" style="font-size:13px;color:#587178">Mật khẩu</label>
+  <input id="pw" type="password" autocomplete="current-password" required autofocus>
+  <button id="go" type="submit">Đăng nhập</button>
+  <div id="msg" role="alert"></div>
+</form>
+<div id="tnx-app"></div>
+<noscript>Cần bật JavaScript để đăng nhập.</noscript>
 <script>
-window.addEventListener('error', function (e) {
-  var box = document.getElementById('tnx-err');
-  if (box && !window.TNX) { box.style.display = 'block'; box.textContent = 'Không tải được công cụ: ' + (e.message || 'lỗi tệp tho-nhac.js') + '. Hãy thử nhấn Ctrl + F5.'; }
-});
+(function () {
+  function b64(s) { var b = atob(s), u = new Uint8Array(b.length); for (var i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u; }
+  async function decrypt(pack, password) {
+    var enc = new TextEncoder();
+    var base = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']);
+    var key = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt: b64(pack.s), iterations: pack.n, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+    var plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64(pack.i) }, key, b64(pack.c));
+    return new TextDecoder().decode(plain);
+  }
+  var form = document.getElementById('login'), msg = document.getElementById('msg'), go = document.getElementById('go'), fails = 0;
+  form.addEventListener('submit', async function (e) {
+    e.preventDefault(); msg.textContent = '';
+    if (!(window.crypto && crypto.subtle)) { msg.textContent = 'Trình duyệt hoặc địa chỉ trang không hỗ trợ mã hóa. Hãy dùng https.'; return; }
+    go.disabled = true; go.textContent = 'Đang kiểm tra...';
+    try {
+      var res = await fetch('tho-nhac.enc?v=' + Date.now(), { cache: 'no-store' });
+      if (!res.ok) throw new Error('missing');
+      var pack = await res.json(), code;
+      try { code = await decrypt(pack, document.getElementById('pw').value); }
+      catch (err) {
+        fails++; await new Promise(function (r) { setTimeout(r, Math.min(8000, 800 * fails)); });
+        msg.textContent = 'Sai mật khẩu.'; go.disabled = false; go.textContent = 'Đăng nhập'; return;
+      }
+      document.getElementById('pw').value = '';
+      form.style.display = 'none';
+      var s = document.createElement('script'); s.textContent = code; document.body.appendChild(s);
+    } catch (err) {
+      msg.textContent = 'Không tải được tệp tho-nhac.enc. Hãy kiểm tra tệp đã được đưa lên GitHub.';
+      go.disabled = false; go.textContent = 'Đăng nhập';
+    }
+  });
+})();
 </script>
-<script src="tho-nhac.js?v=4" onerror="document.getElementById('tnx-err').style.display='block';document.getElementById('tnx-err').textContent='Không tìm thấy tệp tho-nhac.js. Hãy kiểm tra tên tệp trên GitHub.';"></script>
 </body>
 </html>
