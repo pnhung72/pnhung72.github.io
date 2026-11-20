@@ -3,7 +3,7 @@
  * Nhập lời thơ, chọn điệu → tự tạo giai điệu + hòa âm phối khí → nghe thử → tải về
  * MusicXML (.musicxml / .xml) và MIDI (.mid) để mở trong Guitar Pro 8, kèm WAV và bảng hợp âm.
  * Không cần thư viện ngoài.
- * Bản tối ưu: tách chữ ở dấu …, giai điệu mượt hơn, UST có hơi thở + vibrato; MusicXML có hợp âm ở mọi ô nhịp, dấu luyến câu, dấu lấy hơi, cường độ, rit., fermata kết.
+ * Bản tối ưu: tách chữ ở dấu …, giai điệu mượt hơn, UST có hơi thở + vibrato; MusicXML có hợp âm ở mọi ô nhịp, luyến láy cuối câu theo dấu thanh, dấu lấy hơi, cường độ, rit., fermata kết.
  */
 (function (G) {
 'use strict';
@@ -13,9 +13,9 @@ var SHARP = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 var FLAT  = ['C','Db','D','Eb','E','F','Gb','G','Ab','A','Bb','B'];
 var MAJOR = [0,2,4,5,7,9,11], MINOR = [0,2,3,5,7,8,11];            // thứ: hòa thanh
 var FIFTHS_BY_PC = {0:0,7:1,2:2,9:3,4:4,11:5,6:6,5:-1,10:-2,3:-3,8:-4,1:-5};
-var QUAL = {M:[0,4,7], m:[0,3,7], '7':[0,4,7,10], m7:[0,3,7,10]};
-var SUF  = {M:'', m:'m', '7':'7', m7:'m7'};
-var XKIND = {M:'major', m:'minor', '7':'dominant', m7:'minor-seventh'};
+var QUAL = {M:[0,4,7], m:[0,3,7], '7':[0,4,7,10], m7:[0,3,7,10], M7:[0,4,7,11]};
+var SUF  = {M:'', m:'m', '7':'7', m7:'m7', M7:'maj7'};
+var XKIND = {M:'major', m:'minor', '7':'dominant', m7:'minor-seventh', M7:'major-seventh'};
 
 function mod(n, m) { return ((n % m) + m) % m; }
 function mulberry32(a) {
@@ -85,7 +85,7 @@ var STYLES = {
     drums:{36:[0,8],37:[4,10,14],42:S8}, dv:{36:82,37:58,42:40},
     bassP:[[0,6,'r'],[6,2,'5'],[8,6,'r'],[14,2,'5']],
     compP:[[0,[0]],[4,[3]],[6,[4]],[8,[2]],[12,[3]],[14,[4]]] },
-  rumba:    { name:'Rumba',      tempo:84,  beats:4, comp:'nylon', bass:32,
+  rumba:    { ext:true, name:'Rumba',      tempo:84,  beats:4, comp:'nylon', bass:32,
     drums:{36:[0,6,10],37:[4,12],42:S8}, dv:{36:80,37:56,42:42},
     bassP:[[0,6,'r'],[6,6,'5'],[12,4,'r']],
     compP:[[0,[0,3]],[2,[4]],[6,[1,3]],[8,[4]],[12,[2,4]],[14,[3]]] },
@@ -97,7 +97,7 @@ var STYLES = {
     drums:{36:[0],37:[4,8],42:[0,4,8]}, dv:{36:78,37:50,42:42},
     bassP:[[0,4,'r']],
     compP:[[4,ALL],[8,ALL]] },
-  bossa:    { name:'Bossa nova', tempo:100, beats:4, comp:'nylon', bass:32,
+  bossa:    { ext:true, name:'Bossa nova', tempo:100, beats:4, comp:'nylon', bass:32,
     drums:{36:[0,10],37:[0,6,12],42:S8}, dv:{36:70,37:62,42:40},
     bassP:[[0,6,'r'],[6,6,'5'],[12,4,'r']],
     compP:[[0,ALL],[6,ALL],[10,ALL],[12,ALL]] },
@@ -177,14 +177,20 @@ function generate(opts) {
     var b = Object.assign({ idx: bars.length, kind: kind, chord: chord }, extra || {});
     b.t = b.idx * barLen; bars.push(b); return b;
   }
-  function progOf(s) { return pool[(o.seed + (o.keep ? 0 : s)) % pool.length].map(function (c) { return mk(c[0], c[1]); }); }
+  function progOf(s) {      // đoạn điệp khúc / cầu dùng chuỗi khác đoạn lời để tạo tương phản; điệu có ext dùng hợp âm bảy
+    var lab = (secs[s] && secs[s].label) || '', alt = /điệp|chorus|cầu|bridge/i.test(lab) ? 1 : 0;
+    return pool[(o.seed + (o.keep ? alt : s)) % pool.length].map(function (c) {
+      var q = c[1]; if (st.ext) q = q === 'm' ? 'm7' : q === 'M' ? 'M7' : q;
+      return mk(c[0], q);
+    });
+  }
 
   // --- thang âm + âm vực giọng hát
   var scale = [];
   for (var m = 36; m <= 96; m++) if (key.scale.indexOf(mod(m - key.pc, 12)) >= 0) scale.push(m);
   var centerMidi = o.range === 'high' ? 69 : 62, center = 0, bd = 99;
   scale.forEach(function (mm, i) { if (Math.abs(mm - centerMidi) < bd) { bd = Math.abs(mm - centerMidi); center = i; } });
-  var prev = center, same = 0;
+  var prev = center, same = 0, run = 1;
   var melody = [];                                   // sự kiện giai điệu
 
   function setLine(sIdx, li, words, startBarIdx, isFinal) {
@@ -233,6 +239,12 @@ function generate(opts) {
       if (key.mode === 'minor' && !ev.last && mod(scale[idx] - key.pc, 12) === 11 && ev.bar.chord.pcs.indexOf(scale[idx] % 12) < 0) {
         idx = Math.abs(idx - 1 - target) <= Math.abs(idx + 1 - target) ? idx - 1 : idx + 1;
       }
+      if (idx === prev && run >= 2 && !ev.last) {
+        var cand = [idx + 1, idx - 1, idx + 2, idx - 2].filter(function (c) { return pcs.indexOf(scale[c] % 12) >= 0; });
+        cand.sort(function (a, b) { return Math.abs(a - target) - Math.abs(b - target); });
+        idx = cand.length ? cand[0] : idx + (target >= prev ? 1 : -1);
+      }
+      run = idx === prev ? run + 1 : 1;
       ev.idx = idx; ev.midi = scale[idx]; prev = idx;
       melody.push(ev);
     });
@@ -281,7 +293,17 @@ function generate(opts) {
   var leadProg = GM[o.lead] != null ? GM[o.lead] : 53;
   var tMel = { id: 'mel', name: 'Giọng hát (giai điệu)', program: leadProg, channel: 0, synth: SYNTH[o.lead] || 'voice', clef: 'G', vol: 100, voices: [[]], chordsAll: true };
   melody.forEach(function (ev) {
-    tMel.voices[0].push({ t: ev.t, d: ev.d, n: [ev.midi], v: ev.strong ? 92 : 82, lyric: ev.syl.text, first: ev.first, last: ev.last, fin: ev.fin });
+    var tone = ev.syl.tone, dir = (tone === 'sac' || tone === 'nga') ? 1 : (tone === 'ngang' ? 0 : -1), v = ev.strong ? 92 : 82;
+    if (dir && ev.last && !ev.fin && ev.d >= 6) {
+      // luyến láy cuối câu: thanh đi lên (sắc, ngã) luyến từ nốt dưới lên; thanh đi xuống (huyền, hỏi, nặng) luyến từ nốt trên xuống; kết ở nốt hợp âm
+      var nbi = ev.idx - dir;
+      if (mod(scale[nbi] - key.pc, 12) === 11 && key.mode === 'minor') nbi = ev.idx + dir;
+      var d2 = 4, d1 = ev.d - d2;
+      tMel.voices[0].push({ t: ev.t, d: d1, n: [scale[nbi]], v: v, lyric: ev.syl.text, mel: 'start' });
+      tMel.voices[0].push({ t: ev.t + d1, d: d2, n: [ev.midi], v: v - 6, last: true, mel: 'stop' });
+    } else {
+      tMel.voices[0].push({ t: ev.t, d: ev.d, n: [ev.midi], v: v, lyric: ev.syl.text, last: ev.last, fin: ev.fin });
+    }
   });
   tracks.push(tMel);
   if (o.harmony) {
@@ -299,9 +321,8 @@ function generate(opts) {
   tracks.push(tB, tD);
 
   function voicing(ch) {
-    var r = 43 + mod(ch.pc - 43, 12), iv = ch.iv, v = [r, r + 7, r + 12, r + 12 + iv[1], r + 12 + 7];
-    if (iv[3]) v.push(r + 12 + iv[3]);
-    return v;
+    var r = 43 + mod(ch.pc - 43, 12), iv = ch.iv;
+    return [r, r + 7, r + 12, r + 12 + iv[1], iv[3] ? r + 12 + iv[3] : r + 12 + 7];   // hợp âm bảy: nốt bảy thay quãng 5 cao
   }
   function bassNote(ch, kind) {
     var r = 36 + mod(ch.pc - 36, 12);
@@ -489,7 +510,7 @@ function toMusicXML(song) {
               ev.n.forEach(function (nn, k) {
                 s += noteXml({ chord: k > 0, midi: tr.drum ? null : nn, perc: tr.drum ? nn : null, names: names, pid: pid,
                                dur: cd, voice: vnum, tieS: tieS, tieE: tieE, lyric: (k === 0 && !tieE) ? ev.lyric : null,
-                               slur: k === 0 && ev.first && ci === 0 && !pc.contFrom ? 'start' : (k === 0 && ev.last && ci === chunks.length - 1 && !pc.contTo ? 'stop' : null),
+                               slur: k === 0 && ev.mel === 'start' && ci === 0 && !pc.contFrom ? 'start' : (k === 0 && ev.mel === 'stop' && ci === chunks.length - 1 && !pc.contTo ? 'stop' : null),
                                breath: k === 0 && ev.last && !ev.fin && ci === chunks.length - 1 && !pc.contTo,
                                fermata: k === 0 && ev.fin && ci === chunks.length - 1 && !pc.contTo });
               });
@@ -711,7 +732,7 @@ function toUST(song, noTone) {
       vib = true;
       if (nx && nx.t * T16 <= t0 + len + 1) len -= 60;
     }
-    note(len, noTone ? plain(e.lyric || 'a') : (e.lyric || 'a'), e.n[0]);
+    note(len, e.mel === 'stop' ? '+' : (noTone ? plain(e.lyric || 'a') : (e.lyric || 'a')), e.n[0]);
     if (vib) out.push('VBR=65,180,30,25,25,0,0,0');
     cur = t0 + len;
   });
